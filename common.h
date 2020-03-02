@@ -12,6 +12,7 @@ struct Density {
 };
 
 enum ScreenView {
+  none,
   main,
   settings,
   error
@@ -24,7 +25,7 @@ struct Settings {
   float sensorMultiplier;
   bool startBeep;
   bool finishBeep;
-  bool invertOutputPin;
+  bool invertRelay;
 };
 
 struct HistoryNote {
@@ -32,13 +33,11 @@ struct HistoryNote {
   float value;
 };
 
-struct BlinkInt {
-  int value;
-  uint16_t color;
-};
-
-bool AreBlinkIntEqual(BlinkInt val1, BlinkInt val2) {
-  return val1.value == val2.value && val1.color == val2.color;
+char *ToYesNo(bool value) {
+  if (value) {
+    return "YES";
+  }
+  return "NO";
 };
 
 ;

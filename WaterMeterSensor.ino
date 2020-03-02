@@ -1,8 +1,9 @@
 #include <math.h>
 #include <Encoder.h>
 #include <TFT_HX8357.h>
-#include "common.h"
 #include "Free_Fonts.h"
+#include "common.h"
+#include "blinkColor.h"
 
 #define TFT_GREY 0x5AEB
 #define encoderPinDT 2
@@ -11,13 +12,14 @@
 
 Encoder encoder(encoderPinDT, encoderPinCLK);
 TFT_HX8357 tft = TFT_HX8357();
-ScreenView currentView = ScreenView::settings;
+ScreenView currentView = ScreenView::none;
 
 const uint16_t backgroundColor = 0x0000;
 const uint16_t labelColor = tft.color565(190, 190, 187);
 const uint16_t inactiveColor = tft.color565(35, 32, 35);
 const uint16_t targetMlColor = labelColor;
 const uint16_t currentMlColor = labelColor;
+const uint16_t settingValueColor = labelColor;
 
 long now = 0;
 const int encoderStep = 2;
@@ -29,7 +31,6 @@ long encoderButtonReleasedMillis = 0;
 const int mlMin = 100;
 const int mlMax = 19999;
 const int mlPadding = 138; // tft.textWidth("0", 7) -> 32 pixels (1 symbol)
-BlinkInt prevTargetMl = { 0, targetMlColor };
 int currentMl = 600;
 float prevProgress = -1;
 bool isZeroPercAlreadyDrown = false; // added to avoid blinking 0.00% in progress bar when changing densities quickly
@@ -70,16 +71,17 @@ int densitiesCount = sizeof(densities) / sizeof(densities[0]);
 Settings appSettings = {
   4,      // density index
   10,     // mlStep
-  0,      // blindMl
-  1,      // sensorMultiplier
+  234,      // blindMl
+  31.456f,      // sensorMultiplier
   false,  // startBeep
-  false,  // finishBeep
-  false   // invertOutputPin
+  true,  // finishBeep
+  true   // invertRelay
 };
 const int settingsCount = 6;
 const int focusColor = TFT_ORANGE;
 int focusedSetting = 0;
 int editingSetting = -1;
+BlinkColor blinkColor = BlinkColor();
 // end settings
 
 void setup(void) {
@@ -106,7 +108,7 @@ void setup(void) {
   history[3] = { millis() + 30000, 42 };
   history[4] = { millis() + 40000, 50 };
 
-  onViewSwitch();
+  SwitchView(ScreenView::settings);
 }
 
 Density &currentDensity() {
@@ -117,26 +119,35 @@ void saveCurrentDensityTargetMl() {
 
 }
 
+void saveSettings() {
+
+}
+
 void tryContinueMission() {
   if (missionComplete && !isDraining && currentDensity().targetMl > currentMl) {
     missionComplete = false;
   }
 }
 
-void onViewSwitch() {
-  tft.fillScreen(backgroundColor);
+void SwitchView(ScreenView view) {
+  if (currentView != view) {
+    currentView = view;
+    tft.fillScreen(backgroundColor);
 
-  if (currentView == ScreenView::main) {
-    resetTempValues();
-    drawDensityName();
-    drawLabels();
-    drawTargetMl();
-    drawCurrentMl();
-    drawTimeLeft();
-  } else if (currentView == ScreenView::settings) {
-    focusedSetting = 0;
-    editingSetting = -1;
-    drawSettings();
+    if (currentView == ScreenView::main) {
+      resetTempValues();
+      drawDensityName();
+      drawLabels();
+      drawTargetMl();
+      drawCurrentMl();
+      updateFinishTime();
+      drawTimeLeft();
+      drawProgress();
+    } else if (currentView == ScreenView::settings) {
+      focusedSetting = 0;
+      editingSetting = -1;
+      drawSettings();
+    }
   }
 }
 
@@ -148,22 +159,61 @@ void drawSettings() {
 
     tft.drawString("S E T T I N G S", 240, 13, GFXFF);
 
-    tft.setFreeFont(&FreeSerif18pt7b);
-    tft.setTextDatum(BL_DATUM);
-    tft.setTextColor(labelColor);
+    drawSettingLabel(0, "Target ml step :");
+    drawSettingLabel(1, "Blind zone ml :");
+    drawSettingLabel(2, "Sensor multipler :");
+    drawSettingLabel(3, "Start signal :");
+    drawSettingLabel(4, "Finish signal :");
+    drawSettingLabel(5, "Invert relay :");
 
-    int y = 90;
-    int yStep = 44;
-
-    tft.drawString("Target ml step :", 50, y, GFXFF); y += yStep;
-    tft.drawString("Blind zone ml :", 50, y, GFXFF); y += yStep;
-    tft.drawString("Sensor multipler :", 50, y, GFXFF); y += yStep;
-    tft.drawString("Start signal :", 50, y, GFXFF); y += yStep;
-    tft.drawString("Finish signal :", 50, y, GFXFF); y += yStep;
-    tft.drawString("Invert relay :", 50, y, GFXFF);
+    drawSettingValue(0);
+    drawSettingValue(1);
+    drawSettingValue(2);
+    drawSettingValue(3);
+    drawSettingValue(4);
+    drawSettingValue(5);
 
     drawSettingsFocus(-1);
   }
+}
+
+void drawSettingLabel(int index, char *name) {
+  int y = 90 + (44 * index);
+  
+  tft.setFreeFont(&FreeSerif18pt7b);
+  tft.setTextDatum(BL_DATUM);
+  tft.setTextColor(labelColor, backgroundColor);
+  tft.drawString(name, 50, y, GFXFF);
+}
+
+void drawSettingValue(int index) {
+  int x = 430;
+  int y = 90 + (44 * index);
+  
+  tft.setFreeFont(&FreeMono18pt7b);
+  tft.setTextDatum(BR_DATUM);
+  if (editingSetting < 0) {
+    tft.setTextColor(settingValueColor, backgroundColor);
+  } else {
+    tft.setTextColor(blinkColor.color, backgroundColor);
+  }
+  tft.setTextPadding(135);
+
+  if (index == 0) {
+    tft.drawNumber(appSettings.mlStep, x, y, GFXFF);
+  } else if (index == 1) {
+    tft.drawNumber(appSettings.blindMl, x, y, GFXFF);
+  } else if (index == 2) {
+    tft.drawFloat(appSettings.sensorMultiplier, 2, x, y, GFXFF);
+  } else if (index == 3) {
+    tft.drawString(ToYesNo(appSettings.startBeep), x, y, GFXFF);
+  } else if (index == 4) {
+    tft.drawString(ToYesNo(appSettings.finishBeep), x, y, GFXFF);
+  } else if (index == 5) {
+    tft.drawString(ToYesNo(appSettings.invertRelay), x, y, GFXFF);
+  }
+
+  tft.setTextPadding(0);
 }
 
 void drawSettingsFocus(int prevFocusedSetting) {
@@ -178,6 +228,48 @@ void drawSettingsFocus(int prevFocusedSetting) {
       }
       tft.drawRect(p, (y+(focusedSetting*yStep))-h+1, 480-p-p, h, focusColor);
     }
+  }
+}
+
+void ajustSetting(int direction) {
+  float step = direction > 0 ? 1 : -1;
+
+  if (editingSetting == 0) {
+    appSettings.mlStep += step;
+    if (appSettings.mlStep < 1) {
+      appSettings.mlStep = 1;
+    }
+    if (appSettings.mlStep > 100) {
+      appSettings.mlStep = 100;
+    }
+  } else if (editingSetting == 1) {
+    appSettings.blindMl += step;
+    if (appSettings.blindMl < 0) {
+      appSettings.blindMl = 0;
+    }
+    if (appSettings.blindMl > 10000) {
+      appSettings.blindMl = 10000;
+    }
+  } else if (editingSetting == 2) {
+    if (encoderButtonState) {
+      step /= 100;
+    }
+    appSettings.sensorMultiplier += step;
+    if (appSettings.sensorMultiplier < 0.01f) {
+      appSettings.sensorMultiplier = 0.01f;
+    }
+    if (appSettings.sensorMultiplier > 999.99f) {
+      appSettings.sensorMultiplier = 999.99f;
+    }
+  }
+
+  drawSettingValue(editingSetting);
+}
+
+void updateBlinkingSetting() {
+  blinkColor.update(now, encoderButtonReleasedMillis);
+  if (blinkColor.changed) {
+    drawSettingValue(editingSetting);
   }
 }
 
@@ -263,31 +355,17 @@ void drawProgress() {
 
 void drawTargetMl() {
   if (currentView == ScreenView::main) {
-    BlinkInt newTargetMl = { currentDensity().targetMl, targetMlColor };
 
     if (isEditTargetMl) {
-      if ((now - encoderButtonReleasedMillis) % 666 < 333) {
-        newTargetMl.color = inactiveColor;
-      } else {
-        newTargetMl.color = targetMlColor;
-      }
+      tft.setTextColor(blinkColor.color, backgroundColor);
+    } else {
+      tft.setTextColor(targetMlColor, backgroundColor);
     }
 
-    if (newTargetMl.value != prevTargetMl.value) {
-      updateFinishTime();
-      drawProgress();
-    }
-    
-
-    if (!AreBlinkIntEqual(newTargetMl, prevTargetMl)) {
-      prevTargetMl = newTargetMl;
-
-      tft.setTextColor(newTargetMl.color, backgroundColor);
-      tft.setTextDatum(BR_DATUM);
-      tft.setTextPadding(mlPadding);
-      tft.drawNumber(currentDensity().targetMl, 370, 140, 7);
-      tft.setTextPadding(0);
-    }
+    tft.setTextDatum(BR_DATUM);
+    tft.setTextPadding(mlPadding);
+    tft.drawNumber(currentDensity().targetMl, 370, 140, 7);
+    tft.setTextPadding(0);
   }
 }
 
@@ -415,16 +493,16 @@ void updateFinishTime() {
     float msFor1Ml = calcMsFor1Ml();
     long msLeft = msFor1Ml * mlLeft;
 
-    // check if finishTime has value
-    if (finishTime > 0) {
+    // update finishTime if it not set yet, or isEditTargetMl now
+    if (finishTime <= 0 || isEditTargetMl) {
+      finishTime = now + msLeft;
+    } else {
       long msOldLeft = finishTime - now;
 
       // update finishTime only when difference between msLeft and msOldLeft is greater than 10%
       if (abs(msOldLeft - msLeft) > (0.1 * msLeft)) {
         finishTime = now + msLeft;
       }
-    } else {
-      finishTime = now + msLeft;
     }
   } else {
     finishTime = now;
@@ -481,12 +559,15 @@ void switchDensity(int direction) {
     prevProgress = -1;
     drawDensityName();
     drawTargetMl();
+    updateFinishTime();
+    drawProgress();
   }
 }
 
 void editDensityTargetMl(int increment) {
   int val = appSettings.mlStep * increment;
   Density &d = currentDensity();
+  int prevVal = d.targetMl;
   d.targetMl += val;
 
   d.targetMl = (d.targetMl / appSettings.mlStep) * appSettings.mlStep;
@@ -496,10 +577,15 @@ void editDensityTargetMl(int increment) {
   } else if (d.targetMl > mlMax) {
     d.targetMl = mlMax;
   }
+
+  if (prevVal != d.targetMl) {
+    drawTargetMl();
+    updateFinishTime();
+    drawProgress();
+  }
 }
 
 void resetTempValues() {
-  prevTargetMl = { 0, targetMlColor };
   prevProgress = -1;
   isZeroPercAlreadyDrown = false;
   prevH = -1;
@@ -535,12 +621,39 @@ void startNewPasta() {
 void onEncoderClick() {
   if (currentView == ScreenView::main) {
     isEditTargetMl = !isEditTargetMl;
-    if (!isEditTargetMl) {
+    if (isEditTargetMl) {
+      blinkColor.reset(targetMlColor, inactiveColor);
+    } else {
       saveCurrentDensityTargetMl();
       tryContinueMission();
       drawTargetMl();
       updateFinishTime();
       drawProgress();
+    }
+  } else if (currentView == ScreenView::settings) {
+    if (editingSetting < 0) {
+      if (focusedSetting < 3) {
+        // edit numbers
+        editingSetting = focusedSetting;
+        blinkColor.reset(settingValueColor, inactiveColor);
+      } else {
+        // edit bools
+        if (focusedSetting == 3) {
+          appSettings.startBeep = !appSettings.startBeep;
+        }
+        if (focusedSetting == 4) {
+          appSettings.finishBeep = !appSettings.finishBeep;
+        }
+        if (focusedSetting == 5) {
+          appSettings.invertRelay = !appSettings.invertRelay;
+        }
+        drawSettingValue(focusedSetting);
+        saveSettings();
+      }
+    } else {
+      saveSettings();
+      editingSetting = -1;
+      drawSettingValue(focusedSetting);
     }
   }
 }
@@ -548,12 +661,12 @@ void onEncoderClick() {
 void onEncoderLongClick() {
   if (currentView == ScreenView::main) {
     if (!isEditTargetMl) {
-      currentView = ScreenView::settings;
-      onViewSwitch();
+      SwitchView(ScreenView::settings);
     }
   } else if (currentView == ScreenView::settings) {
-    currentView = ScreenView::main;
-    onViewSwitch();
+    if (editingSetting < 0) {
+      SwitchView(ScreenView::main);
+    }
   }
 }
 
@@ -573,43 +686,51 @@ void checkEncoder() {
     }
   } else if (encoderButtonState && encoderButtonStateNew && now - encoderButtonPressedMillis > 1500) {
     lastUserTouch = now;
-    encoderButtonPressedMillis = now + 3600000;
+    encoderButtonPressedMillis = now + 3600000; // avoid click and long click extra events
     onEncoderLongClick();
   }
 
   // check position
-  if (!encoderButtonState) {
-    long newPosition = encoder.read() / encoderStep;
-    
-    if (newPosition < prevEncoderPosition) {
-      lastUserTouch = now;
-      prevEncoderPosition = newPosition;
-      if (currentView == ScreenView::main) {
-        if (isEditTargetMl) {
-          editDensityTargetMl(-1);
-        } else {
-          switchDensity(-1);
-        }
-      } else if (currentView == ScreenView::settings) {
+  long newPosition = encoder.read() / encoderStep;
+  
+  if (newPosition < prevEncoderPosition) {
+    lastUserTouch = now;
+    prevEncoderPosition = newPosition;
+    encoderButtonPressedMillis = now + 3600000; // avoid click and long click extra events
+    if (currentView == ScreenView::main) {
+      if (isEditTargetMl) {
+        editDensityTargetMl(-1);
+      } else {
+        switchDensity(-1);
+      }
+    } else if (currentView == ScreenView::settings) {
+      if (editingSetting < 0) {
         if (focusedSetting > 0) {
           focusedSetting -= 1;
           drawSettingsFocus(focusedSetting + 1);
         }
+      } else {
+        ajustSetting(-1);
       }
-    } else if (newPosition > prevEncoderPosition) {
-      lastUserTouch = now;
-      prevEncoderPosition = newPosition;
-      if (currentView == ScreenView::main) {
-        if (isEditTargetMl) {
-          editDensityTargetMl(1);
-        } else {
-          switchDensity(1);
-        }
-      } else if (currentView == ScreenView::settings) {
+    }
+  } else if (newPosition > prevEncoderPosition) {
+    lastUserTouch = now;
+    prevEncoderPosition = newPosition;
+    encoderButtonPressedMillis = now + 3600000; // avoid click and long click extra events
+    if (currentView == ScreenView::main) {
+      if (isEditTargetMl) {
+        editDensityTargetMl(1);
+      } else {
+        switchDensity(1);
+      }
+    } else if (currentView == ScreenView::settings) {
+      if (editingSetting < 0) {
         if (focusedSetting < (settingsCount - 1)) {
           focusedSetting += 1;
           drawSettingsFocus(focusedSetting - 1);
         }
+      } else {
+        ajustSetting(1);
       }
     }
   }
@@ -622,10 +743,17 @@ void loop() {
 
   if (currentView == ScreenView::main) {
     if (isEditTargetMl) {
-      drawTargetMl();
+      blinkColor.update(now, encoderButtonReleasedMillis);
+      if (blinkColor.changed) {
+        drawTargetMl();
+      }
     }
 
     drawTimeLeft();
+  } else if (currentView == ScreenView::settings) {
+    if (editingSetting >= 0) {
+      updateBlinkingSetting();
+    }
   }
   
   delay(50);
